@@ -1,4 +1,4 @@
-//! 基于 **p2** `wasi:http`（waki）的同步 GET。
+//! 基于 **p2** `wasi:http`（waki）的同步 HTTP 客户端。
 //!
 //! ## 为什么在 wasip3 上还用 p2 的 http
 //!
@@ -35,17 +35,43 @@ const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 
 /// GET 一个 URL，返回 (HTTP 状态码, 响应体)。
 pub fn get(url: &str) -> Result<(u16, Vec<u8>), String> {
+    request("GET", url, &[])
+}
+
+/// POST 一个 JSON 请求，返回 (HTTP 状态码, 响应体)。
+pub fn post_json(url: &str, extra_headers: &[(&str, &str)]) -> Result<(u16, Vec<u8>), String> {
+    request("POST", url, extra_headers)
+}
+
+/// 发起一次 HTTP 请求，返回 (状态码, 响应体)。
+///
+/// 无论哪种方法，请求体都是空的：AstroBox 的接口只用 query 传参。
+pub fn request(
+    method: &str,
+    url: &str,
+    extra_headers: &[(&str, &str)],
+) -> Result<(u16, Vec<u8>), String> {
     let parsed = Url::parse(url).map_err(|e| format!("URL 解析失败: {url} ({e})"))?;
 
-    let headers = http_types::Headers::from_list(&[(
+    let mut header_list: Vec<(String, Vec<u8>)> = vec![(
         String::from("user-agent"),
         format!("AstroBox-Plugin/{}", env!("CARGO_PKG_VERSION")).into_bytes(),
-    )])
-    .map_err(|e| format!("构造请求头失败: {e:?}"))?;
+    )];
+    for (name, value) in extra_headers {
+        header_list.push(((*name).to_string(), (*value).as_bytes().to_vec()));
+    }
 
+    let headers = http_types::Headers::from_list(&header_list)
+        .map_err(|e| format!("构造请求头失败: {e:?}"))?;
+
+    let wasi_method = match method {
+        "GET" => http_types::Method::Get,
+        "POST" => http_types::Method::Post,
+        other => http_types::Method::Other(other.to_string()),
+    };
     let request = http_types::OutgoingRequest::new(headers);
     request
-        .set_method(&http_types::Method::Get)
+        .set_method(&wasi_method)
         .map_err(|()| "设置请求方法失败".to_string())?;
 
     let scheme = match parsed.scheme() {

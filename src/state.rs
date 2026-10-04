@@ -25,6 +25,10 @@ pub struct PluginState {
     pub provider_name: String,
     pub register_state: RegisterState,
     pub probing: bool,
+    /// 登录流程进行中（浏览器回调等待期间为 true）
+    pub account_connecting: bool,
+    /// 上一次登录失败的原因，直接展示给用户
+    pub account_error: Option<String>,
     pub stats: Option<IndexStats>,
     pub last_checked_ms: u64,
     /// 宿主通过 provider-action `refresh` 拉下来的目录快照
@@ -40,6 +44,8 @@ pub fn state() -> &'static RwLock<PluginState> {
             provider_name: crate::source::provider_name(),
             register_state: RegisterState::Pending,
             probing: false,
+            account_connecting: false,
+            account_error: None,
             stats: None,
             last_checked_ms: 0,
             catalog: None,

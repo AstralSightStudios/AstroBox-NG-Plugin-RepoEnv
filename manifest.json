@@ -10,7 +10,9 @@
     "api_level": 4,
     "permissions": [
         "network",
-        "register_provider"
+        "register_provider",
+        "browser",
+        "account.profile"
     ],
     "additional_files": []
 }

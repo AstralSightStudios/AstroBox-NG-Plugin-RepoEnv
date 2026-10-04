@@ -9,6 +9,7 @@ wit_bindgen::generate!({
 
 use crate::exports::astrobox::psys_plugin_v4::{event, lifecycle};
 
+pub mod account;
 pub mod cache;
 pub mod catalog;
 pub mod http;

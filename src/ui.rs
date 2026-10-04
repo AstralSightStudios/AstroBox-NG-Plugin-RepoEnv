@@ -1,11 +1,14 @@
 use crate::astrobox::psys_host_v4::{self as host, dialog, ui};
 
+use crate::account;
 use crate::source::{self, IndexStats};
 use crate::state::{self, RegisterState};
 
 pub const REFRESH_EVENT: &str = "source_refresh";
 pub const OPEN_REPO_EVENT: &str = "source_open_repo";
 pub const OPEN_COVER_EVENT: &str = "source_open_cover";
+pub const ACCOUNT_CONNECT_EVENT: &str = "account_connect";
+pub const ACCOUNT_DISCONNECT_EVENT: &str = "account_disconnect";
 
 
 const COLOR_CARD: &str = "#1E1E1F";
@@ -45,6 +48,11 @@ pub async fn handle_ui_event(event_type: ui::Event, event_id: &str) {
     }
 
     match event_id {
+        ACCOUNT_CONNECT_EVENT => run_account_connect().await,
+        ACCOUNT_DISCONNECT_EVENT => {
+            account::disconnect();
+            rerender();
+        }
         REFRESH_EVENT => run_probe().await,
         OPEN_REPO_EVENT => dialog::open_url(source::REPO_URL),
         // 拿系统浏览器打开首条资源的封面：图出不来时，一键就能区分
@@ -72,6 +80,38 @@ pub fn handle_timer_payload(payload: &str) {
         .unwrap_or_else(|| payload.to_string());
 
     tracing::info!("timer payload: {}", inner);
+}
+
+/// 登录 AstroBox 账号。
+///
+/// `account::connect()` 会等用户在浏览器里完成登录（`browser.wait_for_intercept`），
+/// 期间这个 guest task 是阻塞的。所以先把「等待登录」渲染出来 —— 浏览器窗口随后
+/// 盖在应用上方，回来时用户能看到结果而不是空白页。
+async fn run_account_connect() {
+    let already_running = state::with_state(|state| {
+        if state.account_connecting {
+            true
+        } else {
+            state.account_connecting = true;
+            state.account_error = None;
+            false
+        }
+    });
+    if already_running {
+        return;
+    }
+    rerender();
+
+    let result = account::connect().await;
+    state::with_state(|state| {
+        state.account_connecting = false;
+        state.account_error = result.as_ref().err().map(|e| e.to_string());
+    });
+    match &result {
+        Ok(()) => tracing::info!("AstroBox 账号已连接"),
+        Err(e) => tracing::warn!("AstroBox 登录失败: {e}"),
+    }
+    rerender();
 }
 
 /// 先渲染「检测中」，再跑异步探测。
@@ -121,6 +161,7 @@ fn build_page() -> ui::Element {
         .gap(12)
         .child(build_header())
         .child(build_source_card())
+        .child(build_account_card())
         .child(build_probe_card())
         .child(build_actions())
         .child(build_hint())
@@ -278,6 +319,96 @@ fn first_cover_url() -> Option<String> {
     let entry = catalog.entries.first()?;
     let base = source::asset_base(entry);
     Some(source::resolve_asset(&base, &entry.cover))
+}
+
+fn build_account_card() -> ui::Element {
+    let connecting = state::read_state(|state| state.account_connecting);
+    let error = state::read_state(|state| state.account_error.clone());
+    let connected = account::load().is_some();
+
+    let status_color = if connected { COLOR_OK } else { COLOR_MUTED };
+    let mut card = ui::Element::new(ui::ElementType::Div, None)
+        .flex()
+        .flex_direction(ui::FlexDirection::Column)
+        .width_full()
+        .gap(8)
+        .bg(COLOR_CARD)
+        .radius(16)
+        .padding(16)
+        .child(
+            ui::Element::new(ui::ElementType::P, Some("AstroBox 账号"))
+                .size(15)
+                .text_color(COLOR_TEXT),
+        )
+        .child(
+            ui::Element::new(
+                ui::ElementType::P,
+                Some(account::status_text().as_str()),
+            )
+            .size(13)
+            .text_color(status_color),
+        );
+
+    if connecting {
+        card = card.child(
+            ui::Element::new(
+                ui::ElementType::P,
+                Some("请在弹出的浏览器里完成登录，插件会等回调…"),
+            )
+            .size(12)
+            .text_color(COLOR_WARN),
+        );
+    }
+
+    if let Some(error) = error {
+        card = card.child(
+            ui::Element::new(ui::ElementType::P, Some(error.as_str()))
+                .size(12)
+                .text_color(COLOR_ERROR),
+        );
+    }
+
+    let label = if connected {
+        "重新登录"
+    } else if connecting {
+        "登录中…"
+    } else {
+        "连接账号"
+    };
+    let connect = ui::Element::new(ui::ElementType::Button, Some(label))
+        .radius(14)
+        .padding(12)
+        .bg(COLOR_ROW)
+        .text_color(COLOR_TEXT)
+        .size(14)
+        .width_full()
+        .align_center()
+        .justify_center()
+        .on(ui::Event::Click, ACCOUNT_CONNECT_EVENT);
+    let connect = if connecting { connect.disabled() } else { connect };
+
+    let mut row = ui::Element::new(ui::ElementType::Div, None)
+        .flex()
+        .width_full()
+        .gap(10)
+        .child(connect);
+
+    if connected {
+        let disconnect = ui::Element::new(ui::ElementType::Button, Some("断开"))
+            .radius(14)
+            .padding(12)
+            .bg(COLOR_ROW)
+            .text_color(COLOR_TEXT)
+            .size(14)
+            .flex()
+            .flex_grow(1.0)
+            .align_center()
+            .justify_center()
+            .on(ui::Event::Click, ACCOUNT_DISCONNECT_EVENT);
+        row = row.child(disconnect);
+    }
+
+    card.child(row)
 }
 
 fn build_actions() -> ui::Element {

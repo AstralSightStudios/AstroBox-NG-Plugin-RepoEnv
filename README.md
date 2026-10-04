@@ -14,9 +14,11 @@
 - **实现 provider-action 回调**：宿主不会自己去拉 `index_v2.csv`，切到源时它向插件派发
   `provider-action` 事件，插件必须抓到 `index_v2.csv` / `devices_v2.json` 并把结果
   `resolve_provider_action` 回去，源才会进入 Ready。
-- 插件页（ui-v3）展示：源信息、注册状态、连通性与 `index_v2.csv` 自检结果
+- 插件页（v4 ui）展示：源信息、注册状态、连通性与 `index_v2.csv` 自检结果
   （HTTP 状态、资源条目数、资源类型分布、设备型号数、免费/付费分布、解析耗时、缺列检查），
   以及宿主最近一次 `refresh` 拉到多少条。
+- **AstroBox 账号登录**：用 v4 的 `browser` 拦截 OAuth 回调自己换取 access token，
+  用于后续访问 AstroBox 的加密资源接口（详见下面「AstroBox 账号登录」）。
 
 ## provider-action 协议
 
@@ -98,14 +100,18 @@ pub fn provider_name() -> String {
 
 ## 权限
 
-`manifest.json` 声明了两项权限：
+`manifest.json` 声明了四项权限：
 
 | 权限 | 用途 |
 | --- | --- |
-| `network` | 状态页用 waki 拉 `index_v2.csv` 做自检 |
+| `network` | 拉 `index_v2.csv` 做自检、换取 AstroBox token |
 | `register_provider` | 注册社区源（宿主会弹窗询问） |
+| `browser` | 登录时打开授权页并拦截 OAuth 回调 |
+| `account.profile` | 只读取宿主已登录的账号源（`get_current` 不返回 token） |
 
 首次启用时宿主会申请权限，允许后需要重启应用；重启后在「全部资源」页右上角的源选择器里就能看到该源。
+**改完 `permissions` 要重新安装插件并重启应用**，否则宿主按旧清单放行，日志里会出现
+`permission 'xxx' not declared by plugin`。
 
 ## 构建
 
@@ -124,6 +130,7 @@ python scripts/build_dist.py --release --package      # release + 打包 .abp
 wit/            AstroBox v4 宿主接口（唯一一次 generate! 的输入）
 src
 ├── lib.rs       # lifecycle + event_v4 guest（导出都是 async fn）+ 唯一一次 generate!
+├── account.rs   # AstroBox 账号：OAuth 授权码流程 + token 落盘 + 带 token 发请求
 ├── provider.rs  # provider-action 协议层：解析载荷、按 action 分发、resolve 回宿主
 ├── catalog.rs   # 源数据层：目录缓存、分类过滤分页、资源详情、下载地址
 ├── source.rs    # 源常量、index_v2.csv 解析与统计、CDN 开关、图片 URL 编码
@@ -170,6 +177,44 @@ strings dist/ab_repo_source_plugin.wasm | grep -c '@0.3.0'   # 必须是 0
 - 网络层是阻塞的（waki 内部 `block_on`）。v4 的导出是 `async func`，宿主允许它们阻塞
   等待，但仍要克制：`on_ui_render` 里绝不碰网络；`index_v2.csv` / `devices_v2.json`
   落盘缓存（TTL 10 分钟），切源、翻页基本不发请求，网络失败回退过期缓存。
+
+## AstroBox 账号登录
+
+插件自己跑一遍标准 OAuth 2.0 授权码流程，拿到 access token 后调 AstroBox 接口。
+**不用 `account` 宿主接口拿 token**：v4 的 `account::get_current()` 刻意只返回脱敏资料和绑定状态，
+不返回 token / cookie（见 docs/plugin-v4/host-api/identity.md）。
+
+```text
+① browser.open（intercept-prefixes = ["https://abox.run/open"]）
+   → https://cas.astralsight.space/login/oauth/authorize
+       ?response_type=code&client_id=...&scope=openid profile email offline_access
+       &state=<随机>&redirect_uri=https://abox.run/open?source=astrobox
+② 用户在浏览器里登录 → CAS 跳回 redirect_uri → 命中前缀，导航被取消
+③ browser.wait_for_intercept 拿回完整回调 URL → 校验 state → 取 code
+④ POST {api_base}/auth/login?code=...  →  {"token":"...","refreshToken":"..."}
+⑤ 之后请求带 X-ASTROBOX-TOKEN: <token>，外层信封 {"success","message","data"}
+```
+
+几个要点：
+
+- **第 ④ 步无鉴权**：没有 client secret、没有设备指纹，code 本身就是一次性凭据。
+  这是插件能独立登录的前提。
+- **`state` 必须校验**：用 `RandomState` 的种子（std 内部从系统随机源取键）生成，
+  回调 state 不匹配说明这个回调不是我们发起的，直接中止。
+- **`ephemeral: true`**：授权页用独立数据区，不污染用户正常浏览的 cookie。
+- **token 不进日志**：`tracing` 只记 source 和时间；断开登录即删除 `cache/astrobox_account.json`。
+- 宿主已登录时用 `account::get_current()` 的 `source` 沿用同一个账号源，
+  省得在另一个 CAS 域重复登录（拿不到就回退到默认源 AstralSight）。
+- 账号源有两套端点（`casAstralsight` / `waterFlames`），见 `src/account.rs::SOURCES`。
+
+### 已知限制
+
+`redirect_uri` 只能用 CAS 为该 client_id 注册的 `https://abox.run/open?source=astrobox`，
+所以首次登录时 CAS 页面显示的应用名是「AstroBox」，用户看不出是哪个插件在登录。
+要独立显示名得在 CAS 侧另注册一个 client_id。
+
+`wait_for_intercept` 期间这个 guest task 是阻塞的（单线程组件），
+所以登录前先把「等待登录」渲染出来，浏览器窗口随后盖在应用上方。
 
 ## 宿主接口绑定
 

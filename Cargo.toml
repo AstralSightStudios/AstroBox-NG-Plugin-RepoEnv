@@ -1,17 +1,28 @@
 [package]
 name = "ab-repo-source-plugin"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-astrobox-ng-wit = "0.3"
+# 宿主接口绑定：wit/ 里只放 AstroBox 的 psys-world-v4，全仓库仅此一次 generate!
+# （一份组件只能有一份 async runtime，重复 generate! 会重复声明
+#  $root:[context-get-0]，宿主侧 task 上下文对不上，on_load 直接 panic）
+#
+# 注意 target 仍是 wasm32-wasip2：api_level 4 的 async 导出是 WIT 层属性，
+# 与 WASI 版本无关；宿主 v4 运行时同时提供 p2 接口。参考本机可正常运行的
+# 简明天气同步器 3.2.0（manifest 写 wasi_version 3，import 全是 @0.2.x）。
+wit-bindgen = { version = "0.57.1", features = ["async", "async-spawn"] }
+# HTTP 走 **p2** 的 wasi:http（waki），不是 p3。原因见 src/http.rs 顶部注释：
+# 一旦 import p3 的 wasi:http@0.3.0，组件就切换到 p3 的 task 机制，
+# 而 wit-bindgen 0.57 的 start_task 仍按 p2 的 $root 上下文槽断言，
+# 表现为 on_load 一启动就 panic：assertion failed: context_get().is_null()
 waki = "0.5.1"
+url = "2"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 tracing-appender = "0.2"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
-url = "2"

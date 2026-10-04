@@ -1,13 +1,13 @@
 {
     "name": "ABRepo-TestEnv",
     "icon": "icon.png",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "为 AstroBox 加入测试源以测试各类资源",
     "author": "AstralSightStudios",
     "website": "https://github.com/AstralSightStudios/ABRepo-TestEnv",
     "entry": "ab_repo_source_plugin.wasm",
-    "wasi_version": 2,
-    "api_level": 3,
+    "wasi_version": 3,
+    "api_level": 4,
     "permissions": [
         "network",
         "register_provider"

@@ -1,4 +1,4 @@
-use astrobox_ng_wit::astrobox::psys_host::{self, dialog, timer, ui_v3 as ui};
+use crate::astrobox::psys_host_v4::{self as host, dialog, ui};
 
 use crate::source::{self, IndexStats};
 use crate::state::{self, RegisterState};
@@ -7,9 +7,6 @@ pub const REFRESH_EVENT: &str = "source_refresh";
 pub const OPEN_REPO_EVENT: &str = "source_open_repo";
 pub const OPEN_COVER_EVENT: &str = "source_open_cover";
 
-/// 定时器载荷：用来把「拉索引」这件阻塞活挪出渲染/点击回调。
-pub const PROBE_PAYLOAD: &str = "probe_index";
-const PROBE_DELAY_MS: u64 = 80;
 
 const COLOR_CARD: &str = "#1E1E1F";
 const COLOR_ROW: &str = "#2A2A2A";
@@ -37,10 +34,10 @@ pub fn rerender() {
     let Some(element_id) = element_id else {
         return;
     };
-    psys_host::ui_v3::render(&element_id, build_page());
+    host::ui::render(&element_id, build_page());
 }
 
-pub fn handle_ui_event(event_type: ui::Event, event_id: &str) {
+pub async fn handle_ui_event(event_type: ui::Event, event_id: &str) {
     tracing::info!("UI event: type={:?}, id={}", event_type, event_id);
 
     if event_type != ui::Event::Click {
@@ -48,7 +45,7 @@ pub fn handle_ui_event(event_type: ui::Event, event_id: &str) {
     }
 
     match event_id {
-        REFRESH_EVENT => schedule_probe(),
+        REFRESH_EVENT => run_probe().await,
         OPEN_REPO_EVENT => dialog::open_url(source::REPO_URL),
         // 拿系统浏览器打开首条资源的封面：图出不来时，一键就能区分
         // 「设备网络到不了 GitHub」还是「URL 拼错了」。
@@ -74,16 +71,15 @@ pub fn handle_timer_payload(payload: &str) {
         })
         .unwrap_or_else(|| payload.to_string());
 
-    if inner == PROBE_PAYLOAD {
-        run_probe();
-    } else {
-        tracing::info!("timer payload: {}", inner);
-    }
+    tracing::info!("timer payload: {}", inner);
 }
 
-/// 先渲染「检测中」，再用宿主 timer 把网络请求挪出点击回调。
-fn schedule_probe() {
-    let already_scheduled = state::with_state(|state| {
+/// 先渲染「检测中」，再跑异步探测。
+///
+/// v4 的导出是 `async fn`，网络请求可以直接 await，不会再阻塞宿主线程，
+/// 也不需要绕宿主 timer 了。
+async fn run_probe() {
+    let already_running = state::with_state(|state| {
         if state.probing {
             true
         } else {
@@ -92,17 +88,11 @@ fn schedule_probe() {
             false
         }
     });
-    if already_scheduled {
+    if already_running {
         return;
     }
-
     rerender();
 
-    let timer_id = astrobox_ng_wit::block_on(async { timer::set_timeout(PROBE_DELAY_MS, PROBE_PAYLOAD).await });
-    tracing::info!("probe scheduled, timer_id={:?}", timer_id);
-}
-
-fn run_probe() {
     let stats = source::probe_index();
     tracing::info!(
         "probe {} -> ok={} status={} entries={} elapsed={}ms",

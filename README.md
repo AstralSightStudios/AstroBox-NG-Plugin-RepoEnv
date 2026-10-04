@@ -1,6 +1,6 @@
 # ABRepo-TestEnv
 
-一个 AstroBox NG（API Level 3）插件：把 [ABRepo-TestEnv](https://github.com/AstralSightStudios/ABRepo-TestEnv)
+一个 AstroBox NG（**API Level 4**）插件：把 [ABRepo-TestEnv](https://github.com/AstralSightStudios/ABRepo-TestEnv)
 这个测试用市场源仓库注册成 AstroBox 社区源（资源页右上角源选择器里显示为 **ABRepo-TestEnv**），
 并在插件页里提供一个最小状态页做自检。
 
@@ -110,7 +110,7 @@ pub fn provider_name() -> String {
 ## 构建
 
 ```bash
-# 需要 rustup target add wasm32-wasip2
+# 需要 rustup target add wasm32-wasip2（stable 即可，不需要 nightly）
 python scripts/build_dist.py                          # debug
 python scripts/build_dist.py --release --package      # release + 打包 .abp
 ```
@@ -121,28 +121,65 @@ python scripts/build_dist.py --release --package      # release + 打包 .abp
 ## 代码结构
 
 ```text
+wit/            AstroBox v4 宿主接口（唯一一次 generate! 的输入）
 src
-├── lib.rs       # lifecycle + event_v3 guest：注册社区源、分发 provider-action / timer
+├── lib.rs       # lifecycle + event_v4 guest（导出都是 async fn）+ 唯一一次 generate!
 ├── provider.rs  # provider-action 协议层：解析载荷、按 action 分发、resolve 回宿主
 ├── catalog.rs   # 源数据层：目录缓存、分类过滤分页、资源详情、下载地址
-├── source.rs    # 源常量、index_v2.csv 解析与统计
-├── http.rs      # 基于 waki 的最小 GET
+├── source.rs    # 源常量、index_v2.csv 解析与统计、CDN 开关、图片 URL 编码
+├── http.rs      # 基于 waki(p2 wasi:http) 的最小 GET
+├── cache.rs     # index/devices 落盘缓存（TTL + 过期回退）
 ├── state.rs     # 注册状态、目录缓存、自检结果
-├── ui.rs        # ui-v3 最小状态页
+├── ui.rs        # v4 ui 最小状态页
 └── logger.rs    # tracing 初始化（stdout + logs/app.log）
 ```
 
-## 不要在渲染路径上做网络请求
+## 为什么 v4 用 wasip2 编译（踩了三次坑才搞清）
 
-插件的网络层（waki）是**阻塞**的：调用期间会占住插件所在线程。所以
+manifest 声明 `wasi_version: 3`，但**编译目标仍是 `wasm32-wasip2`**，HTTP 也用 p2 的
+`wasi:http`（waki）。这不是妥协，是必须：
 
-- `on_ui_render` / `on_ui_event` 里绝对不碰网络 —— 宿主正等着这两个 future，
-  一旦阻塞，页面就会一直停在「等待插件响应渲染请求」（真实踩过：弱网下
-  `devices_v2.json` 花了 16 秒，宿主的渲染请求直接被饿死）。
-- 网络只放在 provider-action 回调里，那是宿主本来就在等我们的地方。
-- `index_v2.csv` / `devices_v2.json` 会落到插件目录的 `cache/`（TTL 10 分钟），
-  所以切源、翻页基本不发请求；网络失败还会回退到过期缓存。
-- 状态页的「重新检测」走宿主 timer，不占用点击回调。
+1. `psys-plugin-v4` 的 `async func` 是 **WIT 层属性**，与 WASI 版本无关；v4 运行时
+   （wasmtime 48）同时装齐 p2 与 p3 接口。文档《WASI Preview 3》一节原话：「宿主同时提供
+   p2 接口，因为大多数语言的运行时目前仍按 p2 链接标准库，两边都装齐才不会缺导入」。
+2. 只要组件 import 了 **p3** 的 `wasi:http@0.3.0`，task 管理就切到 p3 机制，而
+   wit-bindgen 0.57 的 `start_task` 仍按 p2 的 `$root:[context-get-0]` 上下文槽断言，
+   于是插件**一启动就 panic**：
+
+```
+assertion failed: context_get().is_null()
+  at wit-bindgen-0.57.1/src/rt/async_support.rs:501
+  in start_task::<...lifecycle::_export_on_load_cabi>   ← on_load 第一行
+```
+
+验证方式（两条都要过）：
+
+```bash
+# 1. 与本机能跑的 v4 插件对齐：manifest 是 wasi_version 3，但 import 全是 @0.2.x
+strings ~/.local/share/moe.astralsight.astrobox/plugins/*/*.wasm | grep -o 'wasi:http[^ ]*'
+# 2. 自己产物里不能有任何 p3 残留
+strings dist/ab_repo_source_plugin.wasm | grep -c '@0.3.0'   # 必须是 0
+```
+
+另外两条相关约束：
+
+- 全仓库只能有**一次** `wit_bindgen::generate!`。重复 generate!（或同时链两份
+  wit-bindgen crate）会重复声明 `$root:[context-get-0]`，宿主侧 task 上下文同样对不上。
+  所以宿主接口绑定统一从 `wit/` 里的 `psys-world-v4` 自己生成，不再依赖
+  `astrobox-ng-wit` crate。
+- 网络层是阻塞的（waki 内部 `block_on`）。v4 的导出是 `async func`，宿主允许它们阻塞
+  等待，但仍要克制：`on_ui_render` 里绝不碰网络；`index_v2.csv` / `devices_v2.json`
+  落盘缓存（TTL 10 分钟），切源、翻页基本不发请求，网络失败回退过期缓存。
+
+## 宿主接口绑定
+
+`wit/` 只放 AstroBox 官方 WIT 的 v4 部分（从 `pluginsystem/wit` 同步）：
+
+```
+wit/main.wit                    package astrobox:main → 只保留 psys-world-v4
+wit/deps/astrobox-host-v4.wit   宿主接口
+wit/deps/astrobox-plugin-v4.wit 插件导出
+```
 
 ## 排错
 

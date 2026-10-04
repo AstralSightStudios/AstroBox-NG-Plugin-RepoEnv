@@ -1,5 +1,13 @@
-use astrobox_ng_wit::exports::astrobox::psys_plugin::{event_v3 as event, lifecycle};
-use astrobox_ng_wit::FutureReader;
+// 整个组件只有这一次 `generate!`。重复 generate!（或同时链两份 wit-bindgen）
+// 会重复声明 `$root:[context-get-0]` 这个宿主侧 task 上下文槽，
+// 表现为插件一启动就 panic：assertion failed: context_get().is_null()
+wit_bindgen::generate!({
+    path: "wit",
+    world: "psys-world-v4",
+    generate_all,
+});
+
+use crate::exports::astrobox::psys_plugin_v4::{event, lifecycle};
 
 pub mod cache;
 pub mod catalog;
@@ -13,94 +21,64 @@ pub mod ui;
 struct RepoSourcePlugin;
 
 impl event::Guest for RepoSourcePlugin {
-    fn on_event(event_type: event::EventType, event_payload: String) -> FutureReader<String> {
-        let (writer, reader) = astrobox_ng_wit::wit_future::new::<String>(|| String::new());
-
+    async fn on_event(event_type: event::EventType, event_payload: String) -> String {
         tracing::info!("event: type={:?}, payload={}", event_type, event_payload);
 
         match event_type {
             // 宿主拉源数据全靠这个回调，必须回结果，否则源永远不就绪。
-            event::EventType::ProviderAction => provider::handle_action(&event_payload),
-            event::EventType::Timer => ui::handle_timer_payload(&event_payload),
-            _ => {}
+            event::EventType::ProviderAction => provider::handle_action(&event_payload).await,
+            event::EventType::Timer => {
+                ui::handle_timer_payload(&event_payload);
+                String::new()
+            }
+            _ => String::new(),
         }
-
-        astrobox_ng_wit::spawn(async move {
-            let _ = writer.write(String::new()).await;
-        });
-
-        reader
     }
 
-    fn on_ui_event_v3(
+    async fn on_ui_event(
         event_id: String,
-        event_type: event::Event,
+        event_type: event::UiEvent,
         event_payload: String,
-    ) -> FutureReader<String> {
-        let (writer, reader) = astrobox_ng_wit::wit_future::new::<String>(|| String::new());
-
+    ) -> String {
         tracing::info!(
             "ui event: id={}, type={:?}, payload={}",
             event_id,
             event_type,
             event_payload
         );
-        ui::handle_ui_event(event_type, &event_id);
-
-        astrobox_ng_wit::spawn(async move {
-            let _ = writer.write(String::new()).await;
-        });
-
-        reader
+        ui::handle_ui_event(event_type, &event_id).await;
+        String::new()
     }
 
-    fn on_ui_render(element_id: String) -> FutureReader<()> {
-        let (writer, reader) = astrobox_ng_wit::wit_future::new::<()>(|| ());
-
+    async fn on_ui_render(element_id: String) {
         ui::render(&element_id);
-
-        astrobox_ng_wit::spawn(async move {
-            let _ = writer.write(()).await;
-        });
-
-        reader
     }
 
-    fn on_card_render(card_id: String) -> FutureReader<()> {
-        let (writer, reader) = astrobox_ng_wit::wit_future::new::<()>(|| ());
-
+    async fn on_card_render(card_id: String) {
         tracing::info!("on_card_render: {}", card_id);
-
-        astrobox_ng_wit::spawn(async move {
-            let _ = writer.write(()).await;
-        });
-
-        reader
     }
 }
 
 impl lifecycle::Guest for RepoSourcePlugin {
-    fn on_load() {
+    async fn on_load() {
         logger::init();
-        tracing::info!("ABRepo-TestEnv 社区源插件已加载");
+        tracing::info!("ABRepo-TestEnv 社区源插件已加载（API Level 4）");
 
         let provider_name = source::provider_name();
         tracing::info!("registering url provider: {}", provider_name);
 
-        let registered_name = provider_name.clone();
-        let result = astrobox_ng_wit::block_on(async move {
-            astrobox_ng_wit::astrobox::psys_host::register::register_provider(
-                &provider_name,
-                astrobox_ng_wit::astrobox::psys_host::register::ProviderType::Url,
-            )
-            .await
-        });
+        // v4 的 on_load 是 async，可以直接 await 宿主接口，不用 block_on
+        let result = crate::astrobox::psys_host_v4::register::register_provider(
+            provider_name.clone(),
+            crate::astrobox::psys_host_v4::register::ProviderType::Url,
+        )
+        .await;
 
         let granted = result.is_ok();
         tracing::info!("register_provider result: {:?}", result);
 
         state::with_state(|state| {
-            state.provider_name = registered_name;
+            state.provider_name = provider_name;
             state.register_state = if granted {
                 state::RegisterState::Granted
             } else {
@@ -110,4 +88,4 @@ impl lifecycle::Guest for RepoSourcePlugin {
     }
 }
 
-astrobox_ng_wit::export!(RepoSourcePlugin);
+crate::export!(RepoSourcePlugin);

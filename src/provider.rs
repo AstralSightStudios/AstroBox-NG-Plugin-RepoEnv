@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use astrobox_ng_wit::astrobox::psys_host::provider_callback;
+use crate::astrobox::psys_host_v4::provider_callback;
 
 use crate::cache;
 use crate::catalog::{self, Catalog, PageQuery};
@@ -32,12 +32,12 @@ struct ActionRequest {
 ///
 /// 宿主是阻塞等 `resolve_provider_action` 的，所以任何分支都必须回，
 /// 包括不认识的动作 —— 宁可回空值，也不要让宿主等到超时。
-pub fn handle_action(payload: &str) {
+pub async fn handle_action(payload: &str) -> String {
     let request: ActionRequest = match serde_json::from_str(payload) {
         Ok(request) => request,
         Err(error) => {
             tracing::error!("provider-action payload 解析失败: {} ({})", payload, error);
-            return;
+            return String::new();
         }
     };
 
@@ -49,7 +49,7 @@ pub fn handle_action(payload: &str) {
         stringify(&request.params)
     );
 
-    let response = match dispatch(&request) {
+    let response = match dispatch(&request).await {
         Ok(response) => response,
         Err(error) => {
             tracing::error!("provider-action {} 处理失败: {}", request.action, error);
@@ -73,9 +73,11 @@ pub fn handle_action(payload: &str) {
             request.request_id
         );
     }
+
+    String::new()
 }
 
-fn dispatch(request: &ActionRequest) -> Result<Value, String> {
+async fn dispatch(request: &ActionRequest) -> Result<Value, String> {
     let params = &request.params;
     let action = request.action.as_str();
 
@@ -86,7 +88,7 @@ fn dispatch(request: &ActionRequest) -> Result<Value, String> {
             let cached = read_fresh_catalog();
             let catalog = match cached {
                 Some(catalog) => catalog,
-                None => astrobox_ng_wit::block_on(async { catalog::refresh(false) })?,
+                None => catalog::refresh(false)?,
             };
             state::with_state(|state| state.catalog = Some(catalog));
             Ok(json!(null))
@@ -127,7 +129,7 @@ fn dispatch(request: &ActionRequest) -> Result<Value, String> {
             let catalog = read_or_refresh()?;
             let item_id = string_param(params, &["itemId", "item_id", "id", "resourceId"]);
             let item_id = item_id.ok_or("缺少 itemId")?;
-            astrobox_ng_wit::block_on(async { catalog::item_manifest(&catalog, &item_id) })
+            catalog::item_manifest(&catalog, &item_id)
         }
 
         // 下载地址
@@ -140,10 +142,7 @@ fn dispatch(request: &ActionRequest) -> Result<Value, String> {
             if device.is_empty() {
                 return Err("缺少 device".to_string());
             }
-            astrobox_ng_wit::block_on(async {
-                catalog::download_url(&catalog, &item_id, &device)
-            })
-            .map(|url| json!(url))
+            catalog::download_url(&catalog, &item_id, &device).map(|url| json!(url))
         }
 
         other => {
@@ -163,7 +162,7 @@ fn read_or_refresh() -> Result<Catalog, String> {
     if let Some(catalog) = read_fresh_catalog() {
         return Ok(catalog);
     }
-    let catalog = astrobox_ng_wit::block_on(async { catalog::refresh(false) })?;
+    let catalog = catalog::refresh(false)?;
     state::with_state(|state| state.catalog = Some(catalog.clone()));
     Ok(catalog)
 }

@@ -1,0 +1,40 @@
+package astrobox:main;
+
+// AstroBox 插件 API Level 4 的宿主世界。
+//
+// 这里只保留 v4：Level 2/3 的世界需要 `astrobox:psys-host` 等旧包，
+// 本插件用不到，也省得把整套 v2/v3 定义一并 vendored 进来。
+// 原始定义见 https://github.com/AstralSightStudios/AstroBox-Plugin-WIT
+
+world psys-world-v4 {
+  import astrobox:psys-host-v4/os;
+  import astrobox:psys-host-v4/transport;
+  import astrobox:psys-host-v4/ui;
+  import astrobox:psys-host-v4/clipboard;
+  import astrobox:psys-host-v4/dialog;
+  import astrobox:psys-host-v4/device;
+  import astrobox:psys-host-v4/register;
+  import astrobox:psys-host-v4/event;
+  import astrobox:psys-host-v4/provider-callback;
+  import astrobox:psys-host-v4/queue;
+  import astrobox:psys-host-v4/timer;
+  import astrobox:psys-host-v4/interconnect;
+  import astrobox:psys-host-v4/thirdpartyapp;
+  import astrobox:psys-host-v4/watchface;
+  import astrobox:psys-host-v4/i18n;
+  import astrobox:psys-host-v4/http-server;
+  import astrobox:psys-host-v4/browser;
+  import astrobox:psys-host-v4/notification;
+  import astrobox:psys-host-v4/account;
+
+  export astrobox:psys-plugin-v4/lifecycle;
+  export astrobox:psys-plugin-v4/event;
+}
+
+// 需要内建 HTTP 服务器（比如当 OAuth 的 redirect_uri）的插件用这个世界：
+// 在基础世界之上多导出一个请求处理接口。
+world psys-world-v4-http {
+  include psys-world-v4;
+
+  export astrobox:psys-plugin-v4/http;
+}

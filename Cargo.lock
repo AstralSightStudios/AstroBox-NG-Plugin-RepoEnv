@@ -4,9 +4,8 @@ version = 4
 
 [[package]]
 name = "ab-repo-source-plugin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "astrobox-ng-wit",
  "serde",
  "serde_json",
  "tracing",
@@ -14,6 +13,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "waki",
+ "wit-bindgen 0.57.1",
 ]
 
 [[package]]
@@ -33,15 +33,6 @@ name = "anyhow"
 version = "1.0.102"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
-
-[[package]]
-name = "astrobox-ng-wit"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c7afd9b404713d93b70abcff96af47fa9df4b66df5336adc551c0d544862e4a"
-dependencies = [
- "wit-bindgen 0.57.1",
-]
 
 [[package]]
 name = "bitflags"
